@@ -121,12 +121,26 @@ def get_main_keyboard(is_premium: bool = False, is_admin: bool = False):
 def get_admin_keyboard():
     buttons = [
         [KeyboardButton(text="👥 Statistika"), KeyboardButton(text="📊 Top qidiruvlar")],
-        [KeyboardButton(text="➕ Kanal qo'shish"), KeyboardButton(text="🎬 Kino qo'shish")],
-        [KeyboardButton(text="📥 Kanalni skan qilish")],
-        [KeyboardButton(text="💳 Premium sozlamalar")],
-        [KeyboardButton(text="📢 Broadcast"), KeyboardButton(text="🔙 Orqaga")]
+        [KeyboardButton(text="Majburiy kanal qo'shish"), KeyboardButton(text="Majburiy kanal o'chirish")],
+        [KeyboardButton(text="🎬 Kino qo'shish"), KeyboardButton(text="📥 Kanalni skan qilish")],
+        [KeyboardButton(text="💳 Premium sozlamalar"), KeyboardButton(text="📢 Broadcast")],
+        [KeyboardButton(text="🔙 Orqaga")]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+def get_mandatory_channel_delete_keyboard(channels: List[tuple]) -> InlineKeyboardMarkup:
+    buttons = []
+    for channel in channels:
+        row_id = channel[0]
+        channel_name = (channel[2] or str(channel[1]) or "Kanal").strip()
+        short_name = channel_name if len(channel_name) <= 28 else channel_name[:25] + "..."
+        buttons.append(
+            [InlineKeyboardButton(text=f"❌ {short_name}", callback_data=f"mandatory_del_id_{row_id}")]
+        )
+
+    buttons.append([InlineKeyboardButton(text="Bekor qilish", callback_data="mandatory_del_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_premium_settings_keyboard():
     buttons = [
@@ -826,6 +840,8 @@ MENU_TEXTS = {
     "👥 Statistika",
     "📊 Top qidiruvlar",
     "➕ Kanal qo'shish",
+    "Majburiy kanal qo'shish",
+    "Majburiy kanal o'chirish",
     "🎬 Kino qo'shish",
     "📢 Broadcast",
     "📥 Kanalni skan qilish",
@@ -1500,13 +1516,14 @@ async def admin_top_searches(message: Message):
     await message.answer(text)
 
 # ===== ADMIN: ADD CHANNEL =====
+@router.message(F.text == "Majburiy kanal qo'shish")
 @router.message(F.text == "➕ Kanal qo'shish")
 async def admin_add_channel_start(message: Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS:
         return
     
     await message.answer(
-        "📢 <b>Kanal qo'shish</b>\n\n"
+        "📢 <b>Majburiy kanal qo'shish</b>\n\n"
         "Kanal ID'sini yuboring.\n"
         "Masalan: <code>-1001234567890</code> yoki <code>@channel_username</code>\n\n"
         "Bekor qilish: /cancel"
@@ -1680,6 +1697,77 @@ async def admin_add_channel_invite(message: Message, state: FSMContext):
         await message.answer("Kanal allaqachon mavjud!", reply_markup=get_admin_keyboard())
 
     await state.clear()
+
+
+@router.message(F.text == "Majburiy kanal o'chirish")
+async def admin_delete_channel_start(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    channels = db.get_all_channels()
+    if not channels:
+        await message.answer("Majburiy obuna kanallari hozircha yo'q.", reply_markup=get_admin_keyboard())
+        return
+
+    await message.answer(
+        "O'chirmoqchi bo'lgan majburiy kanalni tanlang:",
+        reply_markup=get_mandatory_channel_delete_keyboard(channels),
+    )
+
+
+@router.callback_query(F.data == "mandatory_del_cancel")
+async def admin_delete_channel_cancel(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Sizda huquq yo'q", show_alert=True)
+        return
+
+    await callback.message.edit_text("Bekor qilindi.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("mandatory_del_id_"))
+async def admin_delete_channel_confirm(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Sizda huquq yo'q", show_alert=True)
+        return
+
+    raw_id = callback.data.replace("mandatory_del_id_", "", 1)
+    if not raw_id.isdigit():
+        await callback.answer("Noto'g'ri so'rov", show_alert=True)
+        return
+
+    row_id = int(raw_id)
+    channels = db.get_all_channels()
+    selected = next((channel for channel in channels if str(channel[0]) == str(row_id)), None)
+
+    if not selected:
+        await callback.message.edit_text("Kanal topilmadi yoki allaqachon o'chirilgan.")
+        await callback.answer("Topilmadi", show_alert=True)
+        return
+
+    channel_id = str(selected[1])
+    channel_name = selected[2] or channel_id
+    db.delete_channel(channel_id)
+
+    await callback.message.edit_text(
+        f"✅ Majburiy kanal o'chirildi.\n\n"
+        f"Nom: {channel_name}\n"
+        f"ID: <code>{channel_id}</code>"
+    )
+
+    remaining_channels = db.get_all_channels()
+    if remaining_channels:
+        await callback.message.answer(
+            "Yana o'chirish uchun kanal tanlang:",
+            reply_markup=get_mandatory_channel_delete_keyboard(remaining_channels),
+        )
+    else:
+        await callback.message.answer(
+            "Majburiy obuna kanallari tugadi.",
+            reply_markup=get_admin_keyboard(),
+        )
+
+    await callback.answer("O'chirildi")
 
 
 # ===== ADMIN: ADD MOVIE =====
