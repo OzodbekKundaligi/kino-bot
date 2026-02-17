@@ -537,6 +537,31 @@ class Database:
         except DuplicateKeyError:
             return None
 
+    def get_movie_by_code(self, code: str, active_only: bool = True) -> Optional[tuple]:
+        normalized = (code or "").strip().upper()
+        if not normalized:
+            return None
+        query = {"code": normalized}
+        if active_only:
+            query["is_active"] = 1
+        doc = self.db.movies.find_one(query)
+        return self._movie_tuple(doc)
+
+    def deactivate_movie_by_code(self, code: str) -> Optional[tuple]:
+        normalized = (code or "").strip().upper()
+        if not normalized:
+            return None
+        doc = self.db.movies.find_one_and_update(
+            {"code": normalized, "is_active": 1},
+            {"$set": {"is_active": 0}},
+            return_document=ReturnDocument.BEFORE,
+        )
+        return self._movie_tuple(doc)
+
+    def delete_series_episodes(self, movie_id: int) -> int:
+        result = self.db.series_episodes.delete_many({"movie_id": int(movie_id)})
+        return int(result.deleted_count)
+
     def search_movie(self, query: str) -> Optional[tuple]:
         doc = self.db.movies.find_one({"code": query, "is_active": 1})
         if not doc:
@@ -644,7 +669,7 @@ class Database:
         return self.db.channels.find_one({"channel_id": str(channel_id), "is_active": 1}, {"_id": 1}) is not None
 
     def increment_movie_views(self, movie_id: int):
-        self.db.movies.update_one({"id": int(movie_id)}, {"$inc": {"views": 1}})
+        self.db.movies.update_one({"id": int(movie_id), "is_active": 1}, {"$inc": {"views": 1}})
 
     def get_similar_movies(self, movie_id: int, category: str, limit: int = 5) -> List[tuple]:
         docs = list(
@@ -724,10 +749,14 @@ class Database:
             return False
 
     def get_series_episodes(self, movie_id: int) -> List[tuple]:
+        if not self.db.movies.find_one({"id": int(movie_id), "is_active": 1}, {"_id": 1}):
+            return []
         docs = list(self.db.series_episodes.find({"movie_id": int(movie_id)}).sort("episode_number", ASCENDING))
         return [self._episode_tuple(doc) for doc in docs]
 
     def get_episode(self, movie_id: int, episode_number: int) -> Optional[tuple]:
+        if not self.db.movies.find_one({"id": int(movie_id), "is_active": 1}, {"_id": 1}):
+            return None
         doc = self.db.series_episodes.find_one(
             {"movie_id": int(movie_id), "episode_number": int(episode_number)}
         )
@@ -790,16 +819,25 @@ class Database:
         )
         return [(row.get("_id"), int(row.get("search_count", 0))) for row in rows]
 
-    def get_movie_by_id(self, movie_id: int) -> Optional[tuple]:
-        doc = self.db.movies.find_one({"id": int(movie_id)})
+    def get_movie_by_id(self, movie_id: int, active_only: bool = True) -> Optional[tuple]:
+        query = {"id": int(movie_id)}
+        if active_only:
+            query["is_active"] = 1
+        doc = self.db.movies.find_one(query)
         return self._movie_tuple(doc)
 
-    def get_movie_title(self, movie_id: int) -> Optional[str]:
-        doc = self.db.movies.find_one({"id": int(movie_id)}, {"title": 1})
+    def get_movie_title(self, movie_id: int, active_only: bool = True) -> Optional[str]:
+        query = {"id": int(movie_id)}
+        if active_only:
+            query["is_active"] = 1
+        doc = self.db.movies.find_one(query, {"title": 1})
         return doc.get("title") if doc else None
 
-    def get_movie_title_and_code(self, movie_id: int) -> Optional[Tuple[str, str]]:
-        doc = self.db.movies.find_one({"id": int(movie_id)}, {"title": 1, "code": 1})
+    def get_movie_title_and_code(self, movie_id: int, active_only: bool = True) -> Optional[Tuple[str, str]]:
+        query = {"id": int(movie_id)}
+        if active_only:
+            query["is_active"] = 1
+        doc = self.db.movies.find_one(query, {"title": 1, "code": 1})
         if not doc:
             return None
         return doc.get("title"), doc.get("code")

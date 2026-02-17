@@ -80,8 +80,8 @@ class AdminStates(StatesGroup):
     
    
     broadcast_waiting_message = State()
-   
     scan_waiting_lines = State()
+    delete_movie_waiting_code = State()
 
 # Initialize database
 db = Database(default_premium_price=PREMIUM_PRICE_MONTHLY, default_card_number=CARD_NUMBER, default_card_owner=CARD_OWNER)
@@ -122,7 +122,7 @@ def get_admin_keyboard():
     buttons = [
         [KeyboardButton(text="👥 Statistika"), KeyboardButton(text="📊 Top qidiruvlar")],
         [KeyboardButton(text="Majburiy kanal qo'shish"), KeyboardButton(text="Majburiy kanal o'chirish")],
-        [KeyboardButton(text="🎬 Kino qo'shish"), KeyboardButton(text="📥 Kanalni skan qilish")],
+        [KeyboardButton(text="🎬 Kino qo'shish"), KeyboardButton(text="Kino o'chirish")],
         [KeyboardButton(text="💳 Premium sozlamalar"), KeyboardButton(text="📢 Broadcast")],
         [KeyboardButton(text="🔙 Orqaga")]
     ]
@@ -842,6 +842,7 @@ MENU_TEXTS = {
     "➕ Kanal qo'shish",
     "Majburiy kanal qo'shish",
     "Majburiy kanal o'chirish",
+    "Kino o'chirish",
     "🎬 Kino qo'shish",
     "📢 Broadcast",
     "📥 Kanalni skan qilish",
@@ -865,85 +866,8 @@ async def quick_search(message: Message, state: FSMContext):
 # ================================
 @router.channel_post()
 async def handle_channel_post(message: Message):
-    # Only index posts from registered channels
-    channel_id = str(message.chat.id)
-    if not db.is_channel_registered(channel_id):
-        return
-
-    # Only index media posts (avoid announcements)
-    if not (message.video or message.document or message.animation):
-        return
-
-    # Avoid duplicates
-    if db.get_movie_by_source(channel_id, message.message_id) or db.get_episode_by_source(channel_id, message.message_id):
-        return
-
-    # Extract text for title detection
-    text = ""
-    if message.caption:
-        text = message.caption
-    elif message.text:
-        text = message.text
-    elif message.document and message.document.file_name:
-        text = message.document.file_name
-
-    title, ep_num, media_type, category = parse_caption_template(text)
-    if not title:
-        return
-
-    category = category or guess_category(text)
-
-    if ep_num is not None or media_type == "series":
-        # Series episode
-        series = db.find_series_by_title(title)
-        if not series:
-            code = generate_code_from_title(title)
-            series_id = db.add_movie(
-                title=title,
-                code=code,
-                file_id="series",
-                file_type="series",
-                media_type="series",
-                category=category,
-                description=None,
-                year=None,
-                rating=None
-            )
-            if not series_id:
-                return
-            movie_id = series_id
-        else:
-            movie_id = series[0]
-
-        if ep_num is None:
-            # If series without episode number, skip indexing
-            return
-        db.add_series_episode(
-            movie_id=movie_id,
-            episode_number=ep_num,
-            episode_title=f"{ep_num}-qism",
-            file_id="channel",
-            file_type="channel",
-            source_chat_id=channel_id,
-            source_message_id=message.message_id
-        )
-        return
-
-    # Single movie
-    code = generate_code_from_title(title)
-    db.add_movie(
-        title=title,
-        code=code,
-        file_id="channel",
-        file_type="channel",
-        media_type="movie",
-        category=category,
-        description=None,
-        year=None,
-        rating=None,
-        source_chat_id=channel_id,
-        source_message_id=message.message_id
-    )
+    # Auto-indexing is disabled intentionally.
+    return
 
 # ================================
 # HANDLERS - CATEGORIES
@@ -1770,6 +1694,63 @@ async def admin_delete_channel_confirm(callback: CallbackQuery):
     await callback.answer("O'chirildi")
 
 
+# ===== ADMIN: DELETE MOVIE =====
+@router.message(F.text == "Kino o'chirish")
+async def admin_delete_movie_start(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    await message.answer(
+        "<b>Kino/serial o'chirish</b>\n\n"
+        "O'chirish uchun kodni yuboring.\n"
+        "Masalan: <code>SPID001</code>\n\n"
+        "Bekor qilish: /cancel"
+    )
+    await state.set_state(AdminStates.delete_movie_waiting_code)
+
+
+@router.message(AdminStates.delete_movie_waiting_code)
+async def admin_delete_movie_process(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    raw = (message.text or "").strip()
+    if raw == "/cancel":
+        await state.clear()
+        await message.answer("Bekor qilindi", reply_markup=get_admin_keyboard())
+        return
+
+    if not raw:
+        await message.answer("Kod bo'sh bo'lishi mumkin emas. Masalan: SPID001")
+        return
+
+    movie = db.deactivate_movie_by_code(raw)
+    if not movie:
+        await message.answer(
+            "Bu kod bo'yicha faol media topilmadi.\n"
+            "Kodni tekshirib qayta yuboring yoki /cancel bosing."
+        )
+        return
+
+    movie_id, title, code, file_id, file_type, media_type, category, *_ = movie
+    deleted_episodes = 0
+    if media_type == "series":
+        deleted_episodes = db.delete_series_episodes(movie_id)
+
+    text = (
+        "Media o'chirildi.\n\n"
+        f"Nomi: {title}\n"
+        f"Kod: <code>{code}</code>\n"
+        f"Tur: {media_type}\n"
+        f"Kategoriya: {category}"
+    )
+    if deleted_episodes:
+        text += f"\nO'chirilgan qismlar: {deleted_episodes}"
+
+    await state.clear()
+    await message.answer(text, reply_markup=get_admin_keyboard())
+
+
 # ===== ADMIN: ADD MOVIE =====
 
 
@@ -2194,6 +2175,13 @@ async def admin_scan_channel_start(message: Message, state: FSMContext):
         return
 
     await message.answer(
+        "Kanalni skan qilish funksiyasi o'chirildi.",
+        reply_markup=get_admin_keyboard()
+    )
+    await state.clear()
+    return
+
+    await message.answer(
         "📥 <b>Eski postlarni qo‘lda skan qilish</b>\n\n"
         "Har qatorda bitta link yuboring.\n"
         "Format (tavsiya):\n"
@@ -2206,6 +2194,13 @@ async def admin_scan_channel_start(message: Message, state: FSMContext):
 
 @router.message(AdminStates.scan_waiting_lines)
 async def admin_scan_channel_process(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Kanalni skan qilish funksiyasi o'chirildi.",
+        reply_markup=get_admin_keyboard()
+    )
+    return
+
     if message.text == "/cancel":
         await state.clear()
         await message.answer("❌ Bekor qilindi", reply_markup=get_admin_keyboard())
