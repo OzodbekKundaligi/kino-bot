@@ -141,7 +141,7 @@ class Database:
         default_card_owner: str = "Ozodbbek Mamatov",
         sqlite_fallback_path: str = "telegram_cinema_bot.db",
     ):
-        self.mongo_uri = mongo_uri or os.getenv("MONGO_URI", "mongodb://mongo:UgITPEgTazcyGdpjSGdeMOFkBvBlvgsg@yamanote.proxy.rlwy.net:42488")
+        self.mongo_uri = mongo_uri or os.getenv("MONGO_URI", "mongodb://mongo:iFsFFOVeeBSqkyQVPmsfUSvHHleBuIPK@gondola.proxy.rlwy.net:18683")
         self.mongo_db_name = mongo_db_name or os.getenv("MONGO_DB_NAME", "telegram_cinema_bot")
         self.sqlite_fallback_path = os.getenv("SQLITE_DB_PATH", sqlite_fallback_path)
         self.default_settings = {
